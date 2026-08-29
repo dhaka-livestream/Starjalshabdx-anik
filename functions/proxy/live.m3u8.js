@@ -2,76 +2,86 @@
 export async function onRequest(context) {
     const request = context.request;
     const url = new URL(request.url);
-    const target = url.searchParams.get('url');
 
-    // =============================================
-    // অংশ ১: যদি এটি কোনো .ts ভিডিও ক্লিপের রিকোয়েস্ট হয়
-    // (যেমন: ?url=https://...file.ts)
-    // =============================================
-    if (target && target.includes('.ts')) {
-        const tsResponse = await fetch(target, {
+    // ================================================
+    // ১. এটি কি কোনো .ts ফাইলের রিকোয়েস্ট?
+    // ================================================
+    const tsUrl = url.searchParams.get('url');
+    if (tsUrl && tsUrl.includes('.ts')) {
+        // সরাসরি .ts ফাইল ফেচ করুন (প্রয়োজনীয় হেডারসহ)
+        const tsResponse = await fetch(tsUrl, {
             headers: {
-                'User-Agent': 'VLC/3.0.0'
+                'User-Agent': 'VLC/3.0.0',
+                'Referer': 'https://devm3u.top/',
+                'Origin': 'https://devm3u.top'
             }
         });
         return new Response(tsResponse.body, {
             headers: {
-                'Content-Type': 'video/MP2T',
+                'Content-Type': 'video/MP2T',  // ঠিক MIME টাইপ
                 'Access-Control-Allow-Origin': '*',
-                'Cache-Control': 'public, max-age=3600' // ১ ঘণ্টা ক্যাশে রাখবে
+                'Cache-Control': 'public, max-age=86400'  // ১ দিন ক্যাশে
             }
         });
     }
 
-    // =============================================
-    // অংশ ২: মূল m3u8 প্লেলিস্ট রিকোয়েস্ট
-    // =============================================
+    // ================================================
+    // ২. মূল m3u8 প্লেলিস্ট তৈরি করুন
+    // ================================================
     const apiUrl = 'https://live.devm3u.top/api/play/starjalsha-json-starjalsha';
-    
-    try {
-        // ২.১: API থেকে ফ্রেশ কার্যকরী লিংক সংগ্রহ করুন
-        const apiResponse = await fetch(apiUrl, {
-            headers: { 'User-Agent': 'Mozilla/5.0' }
-        });
-        const apiData = await apiResponse.json();
 
-        // চেক করুন API ঠিকমতো কাজ করছে কিনা
+    try {
+        // ২.১ API থেকে ফ্রেশ লিংক নিন
+        const apiRes = await fetch(apiUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0',
+                'Referer': 'https://devm3u.top/'
+            }
+        });
+        const apiData = await apiRes.json();
+
         if (!apiData.ok || !apiData.url) {
-            return new Response('API থেকে সঠিক লিংক পাওয়া যায়নি', { status: 500 });
+            return new Response('API রেস্পন্স ঠিক নেই', { status: 500 });
         }
 
-        const freshM3u8Url = apiData.url;
+        const m3u8Url = apiData.url;
 
-        // ২.২: সেই ফ্রেশ লিংক থেকে m3u8 প্লেলিস্ট ডাউনলোড করুন
-        const playlistResponse = await fetch(freshM3u8Url, {
-            headers: { 'User-Agent': 'VLC/3.0.0' }
+        // ২.২ m3u8 ফাইল ডাউনলোড করুন
+        const m3u8Res = await fetch(m3u8Url, {
+            headers: {
+                'User-Agent': 'VLC/3.0.0',
+                'Referer': 'https://devm3u.top/'
+            }
         });
-        const content = await playlistResponse.text();
+        let content = await m3u8Res.text();
 
-        // ২.৩: m3u8 ফাইলের ভিতরের .ts ফাইলগুলোর লিংক পুনরায় লিখুন (Rewrite)
-        const baseUrl = freshM3u8Url.substring(0, freshM3u8Url.lastIndexOf('/') + 1);
-        
-        // নিজের প্রোক্সির ঠিকানা বের করুন (যেমন: https://star-jalsha-proxy.pages.dev/proxy/live.m3u8)
-        const currentUrl = context.request.url;
-        const proxyBase = currentUrl.split('?')[0] + '?url='; 
+        // ২.৩ .ts লিংকগুলো রিরাইট করুন - সব ধরনের লিংক সাপোর্ট করে
+        const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
+        const proxyBase = url.origin + url.pathname + '?url=';
 
-        const newContent = content.replace(/([^\n]+\.ts)/g, (match, p1) => {
-            // আপেক্ষিক লিংককে সম্পূর্ণ লিংকে রূপান্তর
-            const absoluteUrl = new URL(p1, baseUrl).href;
-            // প্রতিটি .ts ফাইলকেও এই প্রোক্সি দিয়ে আনুন
-            return `${proxyBase}${encodeURIComponent(absoluteUrl)}`;
+        // রেগুলার এক্সপ্রেশন দিয়ে সব .ts খুঁজুন (কোটা, স্পেস, লাইন ব্রেক সব হ্যান্ডেল করে)
+        content = content.replace(/(https?:\/\/[^\s"']+\.ts| [^\s"']+\.ts)/g, (match) => {
+            // যদি লিংকটি আপেক্ষিক (relative) হয়, তাহলে বেস দিয়ে যোগ করুন
+            let absoluteUrl;
+            if (match.startsWith('http')) {
+                absoluteUrl = match.trim();
+            } else {
+                absoluteUrl = new URL(match.trim(), baseUrl).href;
+            }
+            return ` ${proxyBase}${encodeURIComponent(absoluteUrl)}`;  // স্পেস রেখে দিন
         });
 
-        // ২.৪: পরিবর্তিত প্লেলিস্ট প্লেয়ারে পাঠান
-        return new Response(newContent, {
+        // ২.৪ রেস্পন্স রিটার্ন করুন (সঠিক হেডারসহ)
+        return new Response(content, {
             headers: {
                 'Content-Type': 'application/vnd.apple.mpegurl',
                 'Access-Control-Allow-Origin': '*',
-                'Cache-Control': 'no-cache' // সবসময় ফ্রেশ কনটেন্ট পেতে
+                'Cache-Control': 'no-cache',
+                'Referrer-Policy': 'no-referrer-when-downgrade'
             }
         });
 
     } catch (error) {
-        return new Response('সার্ভার এরর: ' + error.message, { status: 500 });
+        return new Response('প্রক্সি এরর: ' + error.message, { status: 500 });
     }
 }
