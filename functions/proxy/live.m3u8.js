@@ -55,7 +55,6 @@ export async function onRequest(context) {
         let content = await m3u8Res.text();
 
         // ২.৩ প্লেলিস্টের সব .ts লিংককে প্রোক্সি লিংকে রূপান্তর
-        // (যাতে আসল লিংক কখনো প্রকাশ না পায়)
         const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
         const proxyBase = url.origin + url.pathname + '?url=';
 
